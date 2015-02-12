@@ -1,0 +1,353 @@
+---
+title: "Human Activity Recognition Using Machine Learning"
+author: "Kanthimathi Gayatri Sukumar"
+date: "Friday, February 11, 2015"
+output: pdf_document
+title2: Unilateral Dumbbell Biceps Curl Activity
+---
+
+#I. Introduction
+
+Human Activity Recognition - HAR - has emerged as a key research area in the last few years and is gaining increasing attention.
+
+This particular data analysis attempts to accurately predict a particular human activity (Unilateral Dumbbell Biceps Curl) using the data from from a human activity research at http://groupware.les.inf.puc-rio.br/har (Please see this webpage for detailed information). This dataset is licensed under the Creative Commons license (CC BY-SA). The research has been conducted by observing six young adults perfom these activities while recording the data from thier arm, belt, forearm and dumbbell sensors. 
+
+**Goal / Prediction / Dependent Variable: THE ACTIVITY PERFORMED.** Unilateral Dumbbell Biceps Curl in five different types (ways): exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+**Predictors / Independent Variables: SENSOR INFORMATION.** Arm sensor orientation variables, Belt sensor orientation variables, Forearm sensor orientation variables and Dumbbell sensor orientation variables (all on the X, Y and Z axes)
+
+#II. Executive Summary
+
+The Unilateral Dumbbell Biceps Curl activity type (as classified by A, B, C,D and E) is predicted using **Random Forest modelling with 10 fold cross validation**. The prediction model has an **Out of Sample Error rate of 0.365%**. A low Out of Sample Error rate also signifies that the over-fitting has not occurred.
+
+The model has been selected after cleaning, exploring and applying various models of CART, Boosting, Random Forest and Linear Discriminant Analysis and comparing thier results.
+
+The Random Forest model accuracy is limited to the *six young adults* who participated in the research. Application outside of this limitation will not be reliable.
+
+There is also futher scope to use Kappa and ROC for model comparison and selection (possibly between Boosting and Randon Forest for this data set).
+
+#III. Data Analysis
+
+##1. Getting the Data
+
+The data for analysis is downloaded from http://d396qusza40orc.cloudfront.net/predmachlearn. The below code downloads the file, saves it and then reads the data into R.
+
+The training.csv file is used for the predictive modelling through outin this analysis. 
+
+The selected prediction model is then applied on the testing.csv file and the result uploaded in Coursera Machine Learning Class project.
+
+```{r GettingData}
+setwd ("C:/Users/KanthimathiGayatri/Desktop/ML")
+
+trainingFile = "./pml-training.csv"
+if (!file.exists (trainingFile))
+    download.file ("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", trainingFile)
+training = read.csv (trainingFile)
+
+testingFile = "./pml-testing.csv"
+if (!file.exists (testingFile))
+    download.file ("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", testingFile)
+testing = read.csv (testingFile)
+
+#Size of training data
+dim (training)
+
+#Size of testing data
+dim (testing)
+```
+
+##2. Splitting the data into train and test samples
+
+```{r LoadLibraries, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE}
+library (caret)
+library (rpart)
+library (rattle)
+library (randomForest)
+library (scales)
+library (gbm)
+library (plyr)
+library (MASS)
+```
+
+We will split the *training.csv* data into our own training and test sample sets in the proportion of 70:30 over the prediction variable *classe* (denotes the activity type).
+
+We will also set the pseudo random number for the purpose of reproducibility.
+
+```{r DataSplit}
+set.seed (12345)
+inTrain = createDataPartition (y = training$classe, p = 0.7, list = FALSE)
+myTrain = training [inTrain, ]
+myTest = training [-inTrain, ]
+dim(myTrain); dim(myTest)
+```
+
+Dataset **myTrain** represents the train data and **myTest** the test data. With this, we will set **myTest** aside until models are ready to be tested.
+
+##3. Cleaning the Data
+
+**[At several places during cleaning, the results are hidden due to the verbosity. However, the summary of the data before and after the cleaning are added to the appendix for reference]**
+
+Let us print the summary of the data to understand it better.
+
+```{r CleanDataSummary, results='hide'}
+summary(myTrain)
+#Hiding the results due to verbosity...
+```
+
+From the summary it appears that for a few variables, there are 13439 NA fields (out of 13737 fields) identically. 
+
+```{r CleanDataHead, results='hide'}
+head (myTrain, 50) 
+#Hiding the results due to verbosity...
+```
+
+The results shows that the NAs exist only whereever the *new_window* variable is "yes". Thats about 298 records (~2%). 
+
+Let us remove these 298 rows and the columns with all NAs for our modelling. A better approach would be to create a separate model for these removed 298 rows that are data rich.
+
+```{r CleanDataNAs}
+myCleanTrain = subset (myTrain, new_window == "no")
+
+naVecs = colSums (is.na (myCleanTrain)) < nrow (myCleanTrain)
+myCleanTrain = myCleanTrain [ , naVecs]
+```
+
+Next, let us look for near zero variance variables that will not be of use for modelling and remove these.
+
+```{r CleanDataNZV}
+nzv = nearZeroVar (myCleanTrain) #saveMetrics was TRUE during exploration.
+myCleanTrain = subset (myCleanTrain, select = -(nzv))
+```
+
+We will also remove the variables that are not relavant for the prediction of the activity type, the *classe* variable.
+
+```{r CleanDataIrrelavant}
+# Remove variables X, user_name, raw_timestamp_part_1, raw_timestamp_part_2 and cvtd_timestamp. Not relavant to predict classe.
+myCleanTrain = subset (myCleanTrain, select = -(X:cvtd_timestamp))
+```
+
+Let us now check the final cleaned variable names - 
+```{r CleanDataNames}
+names(myCleanTrain)
+
+nVars = ncol(myCleanTrain)
+```
+
+There are now a total of **`r nVars` variables** available for prediction modelling.
+
+
+##4.Machine Learning / Prediction Modelling
+
+**[Refer to the Appendix for Data Exploration Activities and Findings]**
+
+In order to predict activity, as indicated by the categorical variable *classe* (factors "A", "B", "C", "D", "E"), we have created several models and chosen the best that gives the highest Accuracy.
+
+The models that have been used are Classification and Regression Tree (CART), Linear Discriminant Analysis (LDA), Boosting and Random Forest. The predictions also use cross-validation to improve the modelling. We will also be performing transformations before modelling the parametric LDA.
+
+With each model, the IN SAMPLE ERROR (Resubstitution Error) using *myCleanTrain* data set and OUT OF SAMPLE ERROR (Generalization Error) using a cleaned *myTest* and calculated and used for finding the best model fit.
+
+The errors have been the least for **Random Forest** prediction for this dataset. 
+
+We will describe the prediction and accuracy using Random Forest below.
+
+**[Refer to the Appendix for prediction and accuracy using CART, LDA and Boosting]**
+
+A 10-fold cross validation has been used to reduce over-fitting duing Random Forest modelling. The splitting of the data set in to a 70:30 training:test is also to detect over-fitting.
+
+Before modelling, let us apply the same cleaning method that we created with *myTrain* dataset, on the *myTest* dataset. The cleaned myTest dataset is needed for the OUT OF SAMPLE ERROR computation.
+
+```{r PrepCleanTest}
+myCleanTest = subset (myTest, new_window == "no")
+myCleanTest = myCleanTest [ , naVecs]
+myCleanTest = subset (myCleanTest, select = -(nzv))
+myCleanTest = subset (myCleanTest, select = -(X:cvtd_timestamp))
+```
+
+**RANDOM FOREST MODELLING**
+
+Random Forest is performed on the cleaned training data, with a cross-validation of 10 folds.
+
+```{r RandomForest}
+fitControl = trainControl (method = "cv", number = 10)
+rfFit = train (classe ~ ., data = myCleanTrain, method = "rf", trControl = fitControl, verbose = FALSE)
+
+# Print the Fit
+rfFit
+
+# Print the model
+rfFit$finalModel
+
+# Print Accuracy IN SAMPLE
+accuracyIS = confusionMatrix (myCleanTrain$classe, predict (rfFit, myCleanTrain))$overall[1]
+accuracyIS
+
+# Print Accuracy OUT OF SAMPLE
+accuracyOS = confusionMatrix (myCleanTest$classe, predict (rfFit, myCleanTest))$overall[1]
+accuracyOS
+```
+
+The Random Forest model yields an **in-sample error of `r (1 - accuracyIS)*100`%** and an **out-of-sample error of `r percent(1 - accuracyOS)`**.
+
+
+#IV. Prediction on Original Test Data (Conclusion)
+
+Finally, let us apply the random forest model to predict the human activity for the project's original test data **testing** from *testing.csv*
+
+We will once again apply the same cleaning method to this data.
+
+```{r CleanTesting}
+myValidationTest = subset (testing, new_window == "no")
+myValidationTest = myValidationTest [ , naVecs]
+myValidationTest = subset (myValidationTest, select = -(nzv))
+myValidationTest = subset (myValidationTest, select = -(X:cvtd_timestamp))
+```
+
+```{r PredTesting}
+pred = predict (rfFit, myValidationTest)
+pred
+```
+
+The predictions for the **Testing** data using random forest modelling are **`r pred`**
+
+
+
+
+#Appendix
+
+
+##A. Data Exploration
+
+In data exploration, we will box plot the variables identified to be important by the non-parametric models only (plotting all 54 variables will be messy and an overkill). Will also plot each of these variable's summary for finer details.
+
+
+```{r DataExplore}
+
+par (mfrow = c(2,3))
+
+boxplot (roll_belt ~ classe, data = myCleanTrain)
+boxplot (pitch_forearm ~ classe, data = myCleanTrain)
+boxplot (yaw_belt ~ classe, data = myCleanTrain)
+boxplot (num_window ~ classe, data = myCleanTrain)
+boxplot (magnet_dumbbell_y ~ classe, data = myCleanTrain)
+boxplot (magnet_dumbbell_z ~ classe, data = myCleanTrain)
+
+par (mfrow = c(1,1))
+
+summary (myCleanTrain[,c("roll_belt", "pitch_forearm", "yaw_belt")])
+summary (myCleanTrain[,c("num_window", "magnet_dumbbell_y", "magnet_dumbbell_z")])
+```
+
+From the above exploration, we can observe the below about the variables - 
+
+**roll_belt** - Appears very clean and usable in modelling.
+
+**pitch_forearm** - Appears clean with few outliers for activity B.
+
+**yaw_belt** - Appears to have outliers in positive direction... Would be a good idea to apply log10 on this variable for parametric modelling. Outliers should not pose a problem for non-parametric modelling.
+
+**num_window** - Appears very clean and usable in modelling.
+
+**magnet_dumbbell_y** - - Appears very clean and usable in modelling.
+
+**magnet_dumbbell_z** - Appears to have heavy outliers and a high spread. Definitely needs to be transformed using log10 for parametric modelling.
+
+
+
+We will also check if any of the variables are correlated.
+
+```{r Correlation}
+
+#Perform correlation without the prediction variable
+indexClasse = which (colnames (myCleanTrain) == "classe")
+
+corMat = abs(round (cor(myCleanTrain[,-indexClasse]), 2))
+diag (corMat) = 0
+which (corMat > 0.8, arr.ind = TRUE) #print high correlation indices
+```
+
+There does appear to be predictor variables that are correlated. Principal Component Analysis would be required to be performed for parametric modelling.
+
+##B. Other Models Explored with their Prediction Accuracy
+
+
+###1. Classification and Regression Tree (CART)
+
+CART is performed on the cleaned training data, with a cross-validation of 10 folds. There was no change in the result when the cross-validation folds were increased to 20.
+
+```{r CARTModel}
+fitControl = trainControl (method = "cv", number = 10)
+cartFit = train (classe ~ ., method = "rpart", data = myCleanTrain, trControl = fitControl)
+
+# Print Model
+cartFit$finalModel
+
+# Print Accuracy IN SAMPLE
+accuracyIS = confusionMatrix (myCleanTrain$classe, predict (cartFit, myCleanTrain))$overall[1]
+accuracyIS
+
+# Print Accuracy OUT OF SAMPLE
+accuracyOS = confusionMatrix (myCleanTest$classe, predict (cartFit, myCleanTest))$overall[1]
+accuracyOS
+```
+
+The CART model yields an **in-sample error of `r percent(1 - accuracyIS)`** and an **out-of-sample error of `r percent(1 - accuracyOS)`**. 
+
+###2. BOOSTING 
+
+Boosting is performed on the cleaned training data, with a cross-validation of 10 folds.
+
+```{r Boosting}
+fitControl = trainControl (method = "cv", number = 10)
+boostFit = train (classe ~ ., data = myCleanTrain, method = "gbm", trControl = fitControl, verbose = FALSE)
+
+# Print Accuracy IN SAMPLE
+accuracyIS = confusionMatrix (myCleanTrain$classe, predict (boostFit, myCleanTrain))$overall[1]
+accuracyIS
+
+# Print Accuracy OUT OF SAMPLE
+accuracyOS = confusionMatrix (myCleanTest$classe, predict (boostFit, myCleanTest))$overall[1]
+accuracyOS
+```
+
+The BOOSTING model yields an **in-sample error of `r percent(1 - accuracyIS)`** and an **out-of-sample error of `r percent(1 - accuracyOS)`**. 
+
+Although the out-of-sample error rate is very low, it is slightly more lower for Random Forest model.
+
+###3. Linear Discriminant Analysis (LDA)
+
+LDA is performed on the cleaned training data, with a cross-validation of 10 folds. Scaling and centering is performed before the modelling as this is a parametric model. 
+
+There was no change in the result when the cross-validation folds were increased to 20. Selecting the variables based on variable importance from the other non-parametric models and applying a logrithmic transformation to the very high spread variables (based on data exploration) also did not improve the prediction accuracy.
+
+
+```{r LDA}
+###Linear Discriminant Analysis
+fitControl = trainControl (method = "cv", number = 10)
+ldaFit = train (classe ~ ., method = "lda", preprocess = c("center", "scale", "pca"), data = myCleanTrain, trControl = fitControl) #pca will also include scaling
+
+# Print Accuracy IN SAMPLE
+accuracyIS = ldaFit$results$Accuracy
+accuracyIS
+
+# Print Accuracy OUT OF SAMPLE
+accuracyOS = confusionMatrix (myCleanTest$classe, predict (ldaFit, myCleanTest))$overall[1]
+accuracyOS
+```
+
+The LDA model yields an **in-sample error of `r percent(1 - accuracyIS)`** and an **out-of-sample error of `r percent(1 - accuracyOS)`**. 
+
+##C. Data Summary Before and After Cleaning
+
+Below is the summary of the data **before cleaning**.
+
+```{r BeforeCleaning}
+summary (myTrain)
+head (myTrain, 10)
+```
+
+Below is the summary of the data **after cleaning** which was used for training the model.
+
+```{r AfterCleaning}
+summary (myCleanTrain)
+head (myCleanTrain, 10)
+```
